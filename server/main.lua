@@ -1,22 +1,22 @@
-local QBCore = exports['qb-core']:GetCoreObject()
+local Framework = lib.require('shared.framework')
 
--- Callback to check if enough police are online
-QBCore.Functions.CreateCallback('rs_drugsell:server:checkPolice', function(source, cb)
+lib.callback.register('rs_drugsell:checkPolice', function(source)
     local policeCount = 0
-    for _, v in pairs(QBCore.Functions.GetPlayers()) do
-        local Player = QBCore.Functions.GetPlayer(v)
-        if Player and Player.PlayerData.job.name == "police" and Player.PlayerData.job.onduty then
+    for _, v in pairs(Framework.getPlayers()) do
+        local job = Framework.getJob(v)
+        if job and job.name == "police" and (job.onduty == true or job.onDuty == true) then
             policeCount = policeCount + 1
         end
     end
-    cb(policeCount >= Config.MinimumPolice)
+
+    return policeCount >= Config.MinimumPolice
 end)
 
 -- Event to process drug sale
 RegisterNetEvent('rs_drugsell:server:sellDrug', function(drugName, amount, price)
     local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
+    -- Framework player object is only needed for qb-core money;
+    -- qbx uses exports for money.
 
     -- Verify amount
     local count = exports.ox_inventory:Search(src, 'count', drugName)
@@ -39,7 +39,7 @@ RegisterNetEvent('rs_drugsell:server:sellDrug', function(drugName, amount, price
                 exports.ox_inventory:AddItem(src, Config.BlackMoneyItem, 1, info)
             end
         else
-            Player.Functions.AddMoney('cash', totalPrice)
+            Framework.addMoney(src, 'cash', totalPrice, 'rs_drugsell:sale')
         end
         
         TriggerClientEvent('ox_lib:notify', src, {
@@ -69,18 +69,93 @@ end)
 
 -- Police notify logic moved to client side for ps-dispatch
 -- Fallback police alert if ps-dispatch is missing
-RegisterNetEvent('rs_drugsell:server:policeAlert', function()
-    local src = source
-    -- Notify police
-    for _, v in pairs(QBCore.Functions.GetPlayers()) do
-        local Player = QBCore.Functions.GetPlayer(v)
-        if Player and Player.PlayerData.job.name == 'police' and Player.PlayerData.job.onduty then
-            TriggerClientEvent('ox_lib:notify', v, {
-                title = '911 Reporting',
-                description = 'Suspicious drug activity reported!',
-                type = 'warning',
-                icon = 'shield-halved'
-            })
+RegisterNetEvent('rs_drugsell:server:policeAlert', function(payload)
+    -- Broadcast to all clients; clients decide if they're on-duty police.
+    TriggerClientEvent('rs_drugsell:client:policeAlert', -1, payload)
+end)
+
+-- Version check moved to bottom for clarity
+local function readBoolMeta(key, default)
+    local val = GetResourceMetadata(GetCurrentResourceName(), key, 0)
+    if not val then return default end
+    val = tostring(val):lower()
+    return (val == 'true' or val == '1' or val == 'yes' or val == 'on')
+end
+
+local SUPPRESS_UPDATES = readBoolMeta('suppress_updates', false)
+
+if not SUPPRESS_UPDATES then
+    local function parseVersion(version)
+        local parts = {}
+        for num in version:gmatch("%d+") do
+            table.insert(parts, tonumber(num))
+        end
+        return parts
+    end
+
+    local function compareVersions(current, newest)
+        local currentParts = parseVersion(current or "0.0.0")
+        local newestParts = parseVersion(newest or "0.0.0")
+        for i = 1, math.max(#currentParts, #newestParts) do
+            local c = currentParts[i] or 0
+            local n = newestParts[i] or 0
+            if c < n then return -1
+            elseif c > n then return 1 end
+        end
+        return 0 -- equal
+    end
+
+    function CheckDrugSellVersion()
+        if IsDuplicityVersion() then
+            CreateThread(function()
+                Wait(4000)
+                local resName = GetCurrentResourceName()
+                local currentVersionRaw = GetResourceMetadata(resName, 'version', 0) or "0.0.0"
+                local versionUrl = GetResourceMetadata(resName, 'version_url', 0)
+
+                if not versionUrl or versionUrl == '' then
+                    print("^3[rs_drugsell]^0 No 'version_url' metadata set; skipping GitHub version check.")
+                    return
+                end
+
+                PerformHttpRequest(versionUrl, function(err, body, headers)
+                    if not body or err ~= 200 then
+                        print("^1Unable to run version check for ^7'^3rs_drugsell^7' (^3"..currentVersionRaw.."^7)")
+                        return
+                    end
+
+                    local lines = {}
+                    for line in body:gmatch("[^\r\n]+") do
+                        table.insert(lines, line)
+                    end
+
+                    local newestVersionRaw = lines[1] or "0.0.0"
+                    local changelog = {}
+                    for i = 2, #lines do
+                        table.insert(changelog, lines[i])
+                    end
+
+                    local compareResult = compareVersions(currentVersionRaw, newestVersionRaw)
+
+                    if compareResult == 0 then
+                        print("^7'^3rs_drugsell^7' - ^2You are running the latest version^7. ^7(^3"..currentVersionRaw.."^7)")
+                    elseif compareResult < 0 then
+                        print("^1----------------------------------------------------------------------^7")
+                        print("^7'^3rs_drugsell^7' - ^1You are running an outdated version^7! ^7(^3"..currentVersionRaw.."^7 → ^3"..newestVersionRaw.."^7)")
+                        for _, line in ipairs(changelog) do
+                            print((line:find("http") and "^7" or "^5")..line)
+                        end
+                        print("^1----------------------------------------------------------------------^7")
+                        SetTimeout(3600000, function()
+                            CheckDrugSellVersion()
+                        end)
+                    else
+                        print("^7'^3rs_drugsell^7' - ^5You are running a newer version ^7(^3"..currentVersionRaw.."^7 ← ^3"..newestVersionRaw.."^7) (^1Expect Errors^7)")
+                    end
+                end)
+            end)
         end
     end
-end)
+
+    CheckDrugSellVersion()
+end

@@ -1,4 +1,3 @@
-local QBCore = exports['qb-core']:GetCoreObject()
 local hasSoldToPed = {} -- Cache to prevent selling to same ped multiple times
 
 local lastDebugTime = 0
@@ -63,29 +62,25 @@ end
 
 local stolenDrugs = {} -- Table to track { [entity] = { name = '...', amount = ... } }
 
+local Dispatch = lib.require('client.editable-dispatch')
+
 -- Helper to handle police alerts
 local function AlertPolice()
-    if GetResourceState('ps-dispatch') == 'started' then
-        exports['ps-dispatch']:DrugSale()
-    else
-        -- You can add other dispatch systems here
-        -- e.g. cd_dispatch, core_dispatch, etc.
-        TriggerServerEvent('rs_drugsell:server:policeAlert') -- Fallback generic alert if you implement it, otherwise just silent
-    end
+    Dispatch.drugSale()
 end
 
 -- Function to perform sale
 local function attemptSell(entity, drug)
     -- Check Police
-    QBCore.Functions.TriggerCallback('rs_drugsell:server:checkPolice', function(canSell)
-        if not canSell then
-            lib.notify({
-                title = 'Cannot Sell',
-                description = 'Not enough police in town',
-                type = 'error'
-            })
-            return
-        end
+    local canSell = lib.callback.await('rs_drugsell:checkPolice', false)
+    if not canSell then
+        lib.notify({
+            title = 'Cannot Sell',
+            description = 'Not enough police in town',
+            type = 'error'
+        })
+        return
+    end
 
         -- Process Ped Interaction (Turn, Stop, Freeze)
         -- 1. Get them to face us
@@ -210,7 +205,6 @@ local function attemptSell(entity, drug)
             FreezeEntityPosition(entity, false) -- Unfreeze
             lib.notify({ description = 'Cancelled', type = 'error' })
         end
-    end)
 end
 
 
